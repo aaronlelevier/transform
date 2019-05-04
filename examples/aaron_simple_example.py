@@ -57,11 +57,11 @@ IMAGE_RAW_KEY = 'image_raw'
 #     LABEL_KEY: tf.io.FixedLenFeature([], tf.int64)
 # }
 RAW_DATA_FEATURE_SPEC = { # known as the FEATURE_DESCRIPTION in TFX
-    HEIGHT_KEY: tf.FixedLenFeature([], tf.int64, default_value=0),
-    WIDTH_KEY: tf.FixedLenFeature([], tf.int64, default_value=0),
-    DEPTH_KEY: tf.FixedLenFeature([], tf.int64, default_value=0),
-    LABEL_KEY: tf.FixedLenFeature([], tf.int64, default_value=0),
-    IMAGE_RAW_KEY: tf.FixedLenFeature([], tf.string, default_value=''),
+    HEIGHT_KEY: tf.FixedLenFeature([], tf.int64),
+    WIDTH_KEY: tf.FixedLenFeature([], tf.int64),
+    DEPTH_KEY: tf.FixedLenFeature([], tf.int64),
+    LABEL_KEY: tf.FixedLenFeature([], tf.int64),
+    IMAGE_RAW_KEY: tf.FixedLenFeature([], tf.string),
 }
 
 RAW_DATA_METADATA = dataset_metadata.DatasetMetadata(
@@ -99,7 +99,7 @@ def ReadAndShuffleData(pcoll, filepatterns):
   # string, then that string is the label.
   neg_filepattern, pos_filepattern = filepatterns
 
-  # Read from each file pattern and create a tuple of the review text and the
+  # from each file pattern and create a tuple of the review text and the
   # correct label.
   negative_examples = (
       pcoll
@@ -122,8 +122,71 @@ def ReadAndShuffleData(pcoll, filepatterns):
       | 'Shuffle' >> Shuffle())
 
   # Put the data in the format that can be accepted directly by tf.Transform.
-  return shuffled_examples | 'MakeInstances' >> beam.Map(
-      lambda p: {REVIEW_KEY: p[0], LABEL_KEY: p[1]})
+  return shuffled_examples | 'MakeInstances' >> beam.Map(group_by_tf_example)
+      # lambda p: {REVIEW_KEY: p[0], LABEL_KEY: p[1]})
+
+
+def group_by_tf_example(key_value):
+    import pdb;pdb.set_trace()
+    _, value = key_value
+    image = value['image'][0]
+    label = value['label'][0]
+    height, width, depth = image.shape
+    example = tf.train.Example(features=tf.train.Features(
+        feature={
+            'height': _int64_feature(height),
+            'width': _int64_feature(width),
+            'depth': _int64_feature(depth),
+            'label': _int64_feature(int(label)),
+            'image_raw': _bytes_feature(image.tostring())
+        }))
+    return example
+
+
+# AARON
+# # pylint: disable=invalid-name
+# @beam.ptransform_fn
+# def ReadAndShuffleData(pcoll, filepatterns):
+from examples import aaron_rw_tfrecord as arw
+
+MNIST_DATA_DIR = '/tmp/data/mnist/'
+
+@beam.ptransform_fn
+def ReadAndShuffleData(pcoll, train_or_val_str):
+  """
+  pcoll is a PCollection of incoming `tft.coders.ExampleProtoCoder`
+  """
+  data_dir = os.path.join(MNIST_DATA_DIR, train_or_val_str)
+
+  images_path = os.path.join(data_dir, 'images.gz')
+  labels_path = os.path.join(data_dir, 'labels.gz')
+
+  images, labels = arw.get_images_and_labels(images_path, labels_path)
+
+  images_w_index, labels_w_index = arw.get_images_and_labels_w_index(
+      images, labels)
+
+  # Beam Pipeline
+  image_line = pcoll | "CreateImage" >> beam.Create(images_w_index[arw.SLICE])
+  label_line = pcoll | "CreateLabel" >> beam.Create(labels_w_index[arw.SLICE])
+  group_by = ({
+      'label': label_line,
+      'image': image_line
+  }) | beam.CoGroupByKey()
+
+  # combines images and labels into a single TFRecord
+  all_examples = (
+    group_by | "GroupByToTfExample" >> beam.Map(arw.group_by_tf_example))
+
+  # shuffles TFRecords
+  shuffled_examples = (
+      all_examples
+      | 'Shuffle' >> Shuffle())
+
+  # serializes TFRecords
+  serialize = (
+    shuffled_examples | 'SerializeDeterministically' >>
+    beam.Map(lambda x: x.SerializeToString(deterministic=True)))
 
 
 def read_and_shuffle_data(
@@ -146,19 +209,19 @@ def read_and_shuffle_data(
   with beam.Pipeline() as pipeline:
     coder = tft.coders.ExampleProtoCoder(RAW_DATA_METADATA.schema)
 
-    # pylint: disable=no-value-for-parameter
+    # train - shuffle data step
     _ = (
         pipeline
-        | 'ReadAndShuffleTrain' >> ReadAndShuffleData(
-            (train_neg_filepattern, train_pos_filepattern))
+        | 'ReadAndShuffleTrain' >> ReadAndShuffleData('train')
         | 'EncodeTrainData' >> beam.Map(coder.encode)
         | 'WriteTrainData' >> beam.io.WriteToTFRecord(
-            os.path.join(working_dir, SHUFFLED_TRAIN_DATA_FILEBASE)))
+            os.path.join(working_dir, SHUFFLED_TRAIN_DATA_FILEBASE),
+            file_name_suffix='.gz'))
 
+    # test - shuffle data step
     _ = (
         pipeline
-        | 'ReadAndShuffleTest' >> ReadAndShuffleData(
-            (test_neg_filepattern, test_pos_filepattern))
+        | 'ReadAndShuffleTest' >> ReadAndShuffleData('val')
         | 'EncodeTestData' >> beam.Map(coder.encode)
         | 'WriteTestData' >> beam.io.WriteToTFRecord(
             os.path.join(working_dir, SHUFFLED_TEST_DATA_FILEBASE)))
@@ -381,6 +444,23 @@ def train_and_evaluate(working_dir,
   return result
 
 
+def get_filepatterns():
+  paths = []
+  for dir_name in ['train', 'val']:
+    base_dir_name = os.path.join('/tmp/data/mnist')
+    train_or_val_dir = os.path.join(base_dir_name, dir_name)
+    if not os.path.exists(train_or_val_dir):
+        os.makedirs(train_or_val_dir)
+
+    for fname in ['images', 'labels']:
+      paths.append(
+        os.path.join(train_or_val_dir, '{}.gz'.format(fname)))
+
+  assert len(paths) == 4
+
+  return paths
+
+
 def main():
   parser = argparse.ArgumentParser()
 
@@ -398,16 +478,18 @@ def main():
   else:
     working_dir = tempfile.mkdtemp(dir=args.input_data_dir)
 
-  train_neg_filepattern = os.path.join(args.input_data_dir, 'train/neg/*')
-  train_pos_filepattern = os.path.join(args.input_data_dir, 'train/pos/*')
-  test_neg_filepattern = os.path.join(args.input_data_dir, 'test/neg/*')
-  test_pos_filepattern = os.path.join(args.input_data_dir, 'test/pos/*')
+  # train_neg_filepattern = os.path.join(args.input_data_dir, 'train/neg/*')
+  # train_pos_filepattern = os.path.join(args.input_data_dir, 'train/pos/*')
+  # test_neg_filepattern = os.path.join(args.input_data_dir, 'test/neg/*')
+  # test_pos_filepattern = os.path.join(args.input_data_dir, 'test/pos/*')
+  filepatterns = get_filepatterns()
 
-  read_and_shuffle_data(train_neg_filepattern, train_pos_filepattern,
-                        test_neg_filepattern, test_pos_filepattern,
-                        working_dir)
-  transform_data(working_dir)
-  results = train_and_evaluate(working_dir)
+  read_and_shuffle_data(*filepatterns,
+                        working_dir=working_dir)
+
+  # TODO(aaronlelevier): implement after read/shuffle works
+  # transform_data(working_dir)
+  # results = train_and_evaluate(working_dir)
 
   pprint.pprint(results)
 
