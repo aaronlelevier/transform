@@ -166,17 +166,17 @@ def read_and_shuffle_data(train_neg_filepattern, train_pos_filepattern,
 
     # train - shuffle data step
     _ = (pipeline
-         | 'ReadAndShuffleTrain' >> ReadAndShuffleData('train'))
-         # | 'EncodeTrainData' >> beam.Map(coder.encode)
-         # | 'WriteTrainData' >> beam.io.WriteToTFRecord(os.path.join(
-         #     working_dir, SHUFFLED_TRAIN_DATA_FILEBASE), file_name_suffix='.gz'))
+         | 'ReadAndShuffleTrain' >> ReadAndShuffleData('train')
+         | 'EncodeTrainData' >> beam.Map(coder.encode)
+         | 'WriteTrainData' >> beam.io.WriteToTFRecord(os.path.join(
+             working_dir, SHUFFLED_TRAIN_DATA_FILEBASE), file_name_suffix='.gz'))
 
     # # test - shuffle data step
-    # _ = (pipeline
-    #      | 'ReadAndShuffleTest' >> ReadAndShuffleData('val')
-    #      | 'EncodeTestData' >> beam.Map(coder.encode)
-    #      | 'WriteTestData' >> beam.io.WriteToTFRecord(
-    #          os.path.join(working_dir, SHUFFLED_TEST_DATA_FILEBASE)))
+    _ = (pipeline
+         | 'ReadAndShuffleTest' >> ReadAndShuffleData('val')
+         | 'EncodeTestData' >> beam.Map(coder.encode)
+         | 'WriteTestData' >> beam.io.WriteToTFRecord(
+             os.path.join(working_dir, SHUFFLED_TEST_DATA_FILEBASE), file_name_suffix='.gz'))
     # # pylint: enable=no-value-for-parameter
 
 
@@ -426,10 +426,6 @@ def main():
   else:
     working_dir = tempfile.mkdtemp(dir=args.input_data_dir)
 
-  # train_neg_filepattern = os.path.join(args.input_data_dir, 'train/neg/*')
-  # train_pos_filepattern = os.path.join(args.input_data_dir, 'train/pos/*')
-  # test_neg_filepattern = os.path.join(args.input_data_dir, 'test/neg/*')
-  # test_pos_filepattern = os.path.join(args.input_data_dir, 'test/pos/*')
   filepatterns = get_filepatterns()
 
   read_and_shuffle_data(*filepatterns, working_dir=working_dir)
