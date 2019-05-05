@@ -18,23 +18,26 @@ But, it's an MNIST Example
 """
 
 # pylint: disable=g-bad-import-order
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
 import argparse
+import json
 import os
 import pprint
 import tempfile
 
-# GOOGLE-INITIALIZATION
-
 import apache_beam as beam
 import tensorflow as tf
+from logzero import logger
+
 import tensorflow_transform as tft
 import tensorflow_transform.beam as tft_beam
-from tensorflow_transform.tf_metadata import dataset_metadata
-from tensorflow_transform.tf_metadata import dataset_schema
+from examples import aaron_rw_tfrecord as arw
+from tensorflow_transform.tf_metadata import dataset_metadata, dataset_schema
+
+# GOOGLE-INITIALIZATION
+
+
 
 
 VOCAB_SIZE = 20000
@@ -42,6 +45,11 @@ TRAIN_BATCH_SIZE = 128
 TRAIN_NUM_EPOCHS = 2
 NUM_TRAIN_INSTANCES = 60000
 NUM_TEST_INSTANCES = 10000
+
+# MNIST
+HEIGHT = 28
+WIDTH = 28
+DEPTH = 1
 
 # REVIEW_KEY = 'review'
 # REVIEW_WEIGHT_KEY = 'review_weight'
@@ -78,78 +86,8 @@ EXPORTED_MODEL_DIR = 'exported_model_dir'
 
 # Functions for preprocessing
 
-
-# pylint: disable=invalid-name
-@beam.ptransform_fn
-def Shuffle(pcoll):
-  """Shuffles a PCollection.  Collection should not contain duplicates."""
-  return (pcoll
-          | 'PairWithHash' >> beam.Map(lambda x: (hash(x), x))
-          | 'GroupByHash' >> beam.GroupByKey()
-          | 'DropHash' >> beam.FlatMap(
-              lambda hash_and_values: hash_and_values[1]))
-
-
-# pylint: disable=invalid-name
-@beam.ptransform_fn
-def ReadAndShuffleData(pcoll, filepatterns):
-  """Read a train or test dataset from disk and shuffle it."""
-  # NOTE: we pass filepatterns as a tuple instead of two args, as the current
-  # version of beam assumes that if the first arg to a ptransfrom_fn is a
-  # string, then that string is the label.
-  neg_filepattern, pos_filepattern = filepatterns
-
-  # from each file pattern and create a tuple of the review text and the
-  # correct label.
-  negative_examples = (
-      pcoll
-      | 'ReadNegativeExamples' >> beam.io.ReadFromText(neg_filepattern)
-      | 'PairWithZero' >> beam.Map(lambda review: (review, 0)))
-  positive_examples = (
-      pcoll
-      | 'ReadPositiveExamples' >> beam.io.ReadFromText(pos_filepattern)
-      | 'PairWithOne' >> beam.Map(lambda review: (review, 1)))
-  all_examples = (
-      [negative_examples, positive_examples] | 'Merge' >> beam.Flatten())
-
-  # Shuffle the data.  Note that the data does in fact contain duplicate reviews
-  # for reasons that are unclear.  This means that NUM_TRAIN_INSTANCES and
-  # NUM_TRAIN_INSTANCES are slightly wrong for the preprocessed data.
-  # pylint: disable=no-value-for-parameter
-  shuffled_examples = (
-      all_examples
-      | 'RemoveDuplicates' >> beam.RemoveDuplicates()
-      | 'Shuffle' >> Shuffle())
-
-  # Put the data in the format that can be accepted directly by tf.Transform.
-  return shuffled_examples | 'MakeInstances' >> beam.Map(group_by_tf_example)
-      # lambda p: {REVIEW_KEY: p[0], LABEL_KEY: p[1]})
-
-
-def group_by_tf_example(key_value):
-    import pdb;pdb.set_trace()
-    _, value = key_value
-    image = value['image'][0]
-    label = value['label'][0]
-    height, width, depth = image.shape
-    example = tf.train.Example(features=tf.train.Features(
-        feature={
-            'height': _int64_feature(height),
-            'width': _int64_feature(width),
-            'depth': _int64_feature(depth),
-            'label': _int64_feature(int(label)),
-            'image_raw': _bytes_feature(image.tostring())
-        }))
-    return example
-
-
-# AARON
-# # pylint: disable=invalid-name
-# @beam.ptransform_fn
-# def ReadAndShuffleData(pcoll, filepatterns):
-from examples import aaron_rw_tfrecord as arw
-
 MNIST_DATA_DIR = '/tmp/data/mnist/'
+
 
 @beam.ptransform_fn
 def ReadAndShuffleData(pcoll, train_or_val_str):
@@ -169,29 +107,46 @@ def ReadAndShuffleData(pcoll, train_or_val_str):
   # Beam Pipeline
   image_line = pcoll | "CreateImage" >> beam.Create(images_w_index[arw.SLICE])
   label_line = pcoll | "CreateLabel" >> beam.Create(labels_w_index[arw.SLICE])
-  group_by = ({
-      'label': label_line,
-      'image': image_line
-  }) | beam.CoGroupByKey()
+  group_by = ({'label': label_line, 'image': image_line}) | beam.CoGroupByKey()
 
   # combines images and labels into a single TFRecord
-  all_examples = (
-    group_by | "GroupByToTfExample" >> beam.Map(arw.group_by_tf_example))
+  all_examples = (group_by
+                  | "GroupByToTfExample" >> beam.Map(group_by_dict))
 
   # shuffles TFRecords
-  shuffled_examples = (
-      all_examples
-      | 'Shuffle' >> Shuffle())
-
-  # serializes TFRecords
-  serialize = (
-    shuffled_examples | 'SerializeDeterministically' >>
-    beam.Map(lambda x: x.SerializeToString(deterministic=True)))
+  return (all_examples | 'Shuffle' >> Shuffle())
 
 
-def read_and_shuffle_data(
-    train_neg_filepattern, train_pos_filepattern, test_neg_filepattern,
-    test_pos_filepattern, working_dir):
+def group_by_dict(key_value):
+  # first value - is the index used by `beam.CoGroupByKey` to join the
+  #   image/label from diff files, which we no longer need, so ignore it
+  _, value = key_value
+  image = value['image'][0]
+  label = value['label'][0]
+  height, width, depth = image.shape
+  return {
+    HEIGHT_KEY: HEIGHT,
+    WIDTH_KEY: WIDTH,
+    DEPTH_KEY: DEPTH,
+    LABEL_KEY: label,
+    IMAGE_RAW_KEY: image.tostring()
+  }
+
+
+# pylint: disable=invalid-name
+@beam.ptransform_fn
+def Shuffle(pcoll):
+  """Shuffles a PCollection.  Collection should not contain duplicates."""
+  return (
+      pcoll
+      | 'PairWithHash' >> beam.Map(lambda x: (hash(x[IMAGE_RAW_KEY]), x))
+      | 'GroupByHash' >> beam.GroupByKey()
+      | 'DropHash' >> beam.FlatMap(lambda hash_and_values: hash_and_values[1]))
+
+
+def read_and_shuffle_data(train_neg_filepattern, train_pos_filepattern,
+                          test_neg_filepattern, test_pos_filepattern,
+                          working_dir):
   """Read and shuffle the data and write out as a TFRecord of Example protos.
 
   Read in the data from the positive and negative examples on disk, shuffle it
@@ -210,22 +165,19 @@ def read_and_shuffle_data(
     coder = tft.coders.ExampleProtoCoder(RAW_DATA_METADATA.schema)
 
     # train - shuffle data step
-    _ = (
-        pipeline
-        | 'ReadAndShuffleTrain' >> ReadAndShuffleData('train')
-        | 'EncodeTrainData' >> beam.Map(coder.encode)
-        | 'WriteTrainData' >> beam.io.WriteToTFRecord(
-            os.path.join(working_dir, SHUFFLED_TRAIN_DATA_FILEBASE),
-            file_name_suffix='.gz'))
+    _ = (pipeline
+         | 'ReadAndShuffleTrain' >> ReadAndShuffleData('train'))
+         # | 'EncodeTrainData' >> beam.Map(coder.encode)
+         # | 'WriteTrainData' >> beam.io.WriteToTFRecord(os.path.join(
+         #     working_dir, SHUFFLED_TRAIN_DATA_FILEBASE), file_name_suffix='.gz'))
 
-    # test - shuffle data step
-    _ = (
-        pipeline
-        | 'ReadAndShuffleTest' >> ReadAndShuffleData('val')
-        | 'EncodeTestData' >> beam.Map(coder.encode)
-        | 'WriteTestData' >> beam.io.WriteToTFRecord(
-            os.path.join(working_dir, SHUFFLED_TEST_DATA_FILEBASE)))
-    # pylint: enable=no-value-for-parameter
+    # # test - shuffle data step
+    # _ = (pipeline
+    #      | 'ReadAndShuffleTest' >> ReadAndShuffleData('val')
+    #      | 'EncodeTestData' >> beam.Map(coder.encode)
+    #      | 'WriteTestData' >> beam.io.WriteToTFRecord(
+    #          os.path.join(working_dir, SHUFFLED_TEST_DATA_FILEBASE)))
+    # # pylint: enable=no-value-for-parameter
 
 
 def transform_data(working_dir):
@@ -262,8 +214,8 @@ def transform_data(working_dir):
         # Here tf.compat.v1.string_split behaves differently from
         # tf.strings.split.
         review_tokens = tf.compat.v1.string_split(review, DELIMITERS)
-        review_indices = tft.compute_and_apply_vocabulary(
-            review_tokens, top_k=VOCAB_SIZE)
+        review_indices = tft.compute_and_apply_vocabulary(review_tokens,
+                                                          top_k=VOCAB_SIZE)
         # Add one for the oov bucket created by compute_and_apply_vocabulary.
         review_bow_indices, review_weight = tft.tfidf(review_indices,
                                                       VOCAB_SIZE + 1)
@@ -275,34 +227,30 @@ def transform_data(working_dir):
 
       (transformed_train_data, transformed_metadata), transform_fn = (
           (train_data, RAW_DATA_METADATA)
-          | 'AnalyzeAndTransform' >> tft_beam.AnalyzeAndTransformDataset(
-              preprocessing_fn))
+          | 'AnalyzeAndTransform' >>
+          tft_beam.AnalyzeAndTransformDataset(preprocessing_fn))
       transformed_data_coder = tft.coders.ExampleProtoCoder(
           transformed_metadata.schema)
 
-      transformed_test_data, _ = (
-          ((test_data, RAW_DATA_METADATA), transform_fn)
-          | 'Transform' >> tft_beam.TransformDataset())
+      transformed_test_data, _ = ((
+          (test_data, RAW_DATA_METADATA), transform_fn)
+                                  | 'Transform' >> tft_beam.TransformDataset())
 
-      _ = (
-          transformed_train_data
-          | 'EncodeTrainData' >> beam.Map(transformed_data_coder.encode)
-          | 'WriteTrainData' >> beam.io.WriteToTFRecord(
-              os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE)))
+      _ = (transformed_train_data
+           | 'EncodeTrainData' >> beam.Map(transformed_data_coder.encode)
+           | 'WriteTrainData' >> beam.io.WriteToTFRecord(
+               os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE)))
 
-      _ = (
-          transformed_test_data
-          | 'EncodeTestData' >> beam.Map(transformed_data_coder.encode)
-          | 'WriteTestData' >> beam.io.WriteToTFRecord(
-              os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE)))
+      _ = (transformed_test_data
+           | 'EncodeTestData' >> beam.Map(transformed_data_coder.encode)
+           | 'WriteTestData' >> beam.io.WriteToTFRecord(
+               os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE)))
 
       # Will write a SavedModel and metadata to two subdirectories of
       # working_dir, given by tft.TRANSFORM_FN_DIR and
       # tft.TRANSFORMED_METADATA_DIR respectively.
-      _ = (
-          transform_fn
-          | 'WriteTransformFn' >>
-          tft_beam.WriteTransformFn(working_dir))
+      _ = (transform_fn
+           | 'WriteTransformFn' >> tft_beam.WriteTransformFn(working_dir))
 
 
 # Functions for training
@@ -320,6 +268,7 @@ def _make_training_input_fn(tf_transform_output, transformed_examples,
   Returns:
     The input function for training or eval.
   """
+
   def input_fn():
     """Input function for training and eval."""
     dataset = tf.data.experimental.make_batched_features_dataset(
@@ -425,9 +374,9 @@ def train_and_evaluate(working_dir,
       tf_transform_output,
       os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE + '*'),
       batch_size=TRAIN_BATCH_SIZE)
-  estimator.train(
-      input_fn=train_input_fn,
-      max_steps=TRAIN_NUM_EPOCHS * num_train_instances / TRAIN_BATCH_SIZE)
+  estimator.train(input_fn=train_input_fn,
+                  max_steps=TRAIN_NUM_EPOCHS * num_train_instances /
+                  TRAIN_BATCH_SIZE)
 
   # Evaluate model on eval dataset.
   eval_input_fn = _make_training_input_fn(
@@ -450,11 +399,10 @@ def get_filepatterns():
     base_dir_name = os.path.join('/tmp/data/mnist')
     train_or_val_dir = os.path.join(base_dir_name, dir_name)
     if not os.path.exists(train_or_val_dir):
-        os.makedirs(train_or_val_dir)
+      os.makedirs(train_or_val_dir)
 
     for fname in ['images', 'labels']:
-      paths.append(
-        os.path.join(train_or_val_dir, '{}.gz'.format(fname)))
+      paths.append(os.path.join(train_or_val_dir, '{}.gz'.format(fname)))
 
   assert len(paths) == 4
 
@@ -484,8 +432,7 @@ def main():
   # test_pos_filepattern = os.path.join(args.input_data_dir, 'test/pos/*')
   filepatterns = get_filepatterns()
 
-  read_and_shuffle_data(*filepatterns,
-                        working_dir=working_dir)
+  read_and_shuffle_data(*filepatterns, working_dir=working_dir)
 
   # TODO(aaronlelevier): implement after read/shuffle works
   # transform_data(working_dir)
