@@ -2,3 +2,6 @@ tensorflow
 python-snappy
 yapf
 isort
+jupyter
+notebook
+logzero

@@ -14,4 +14,13 @@ AUTHORS
 ChangeLog
 .DS_Store
 .mypy_cache
+
+# virtualenv
 venv/
+
+# jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# beam
+*-00000-of-00001.gz
