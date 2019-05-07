@@ -209,21 +209,21 @@ def transform_data(working_dir):
 
       def preprocessing_fn(inputs):
         """Preprocess input columns into transformed columns."""
-        review = inputs[REVIEW_KEY]
-
-        # Here tf.compat.v1.string_split behaves differently from
-        # tf.strings.split.
-        review_tokens = tf.compat.v1.string_split(review, DELIMITERS)
-        review_indices = tft.compute_and_apply_vocabulary(review_tokens,
-                                                          top_k=VOCAB_SIZE)
-        # Add one for the oov bucket created by compute_and_apply_vocabulary.
-        review_bow_indices, review_weight = tft.tfidf(review_indices,
-                                                      VOCAB_SIZE + 1)
-        return {
-            REVIEW_KEY: review_bow_indices,
-            REVIEW_WEIGHT_KEY: review_weight,
-            LABEL_KEY: inputs[LABEL_KEY]
-        }
+        return inputs
+        # review = inputs[REVIEW_KEY]
+        # # Here tf.compat.v1.string_split behaves differently from
+        # # tf.strings.split.
+        # review_tokens = tf.compat.v1.string_split(review, DELIMITERS)
+        # review_indices = tft.compute_and_apply_vocabulary(review_tokens,
+        #                                                   top_k=VOCAB_SIZE)
+        # # Add one for the oov bucket created by compute_and_apply_vocabulary.
+        # review_bow_indices, review_weight = tft.tfidf(review_indices,
+        #                                               VOCAB_SIZE + 1)
+        # return {
+        #     REVIEW_KEY: review_bow_indices,
+        #     REVIEW_WEIGHT_KEY: review_weight,
+        #     LABEL_KEY: inputs[LABEL_KEY]
+        # }
 
       (transformed_train_data, transformed_metadata), transform_fn = (
           (train_data, RAW_DATA_METADATA)
@@ -239,12 +239,12 @@ def transform_data(working_dir):
       _ = (transformed_train_data
            | 'EncodeTrainData' >> beam.Map(transformed_data_coder.encode)
            | 'WriteTrainData' >> beam.io.WriteToTFRecord(
-               os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE)))
+               os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE), file_name_suffix='.gz'))
 
       _ = (transformed_test_data
            | 'EncodeTestData' >> beam.Map(transformed_data_coder.encode)
            | 'WriteTestData' >> beam.io.WriteToTFRecord(
-               os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE)))
+               os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE), file_name_suffix='.gz'))
 
       # Will write a SavedModel and metadata to two subdirectories of
       # working_dir, given by tft.TRANSFORM_FN_DIR and
@@ -431,7 +431,7 @@ def main():
   read_and_shuffle_data(*filepatterns, working_dir=working_dir)
 
   # TODO(aaronlelevier): implement after read/shuffle works
-  # transform_data(working_dir)
+  transform_data(working_dir)
   # results = train_and_evaluate(working_dir)
 
   pprint.pprint(results)
