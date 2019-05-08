@@ -18,8 +18,9 @@ tf.enable_eager_execution()
 
 TFRECORD_OUTFILE = 'mnist'
 
+# FixedLenFeature - only allows types: int64, float32 or string
 FEATURE_DESCRIPTION = {
-    'image': tf.FixedLenSequenceFeature([], tf.float32, default_value=0., allow_missing=True),
+    'image': tf.FixedLenFeature([], tf.string, default_value=''),
     'label': tf.FixedLenFeature([], tf.int64, default_value=0),
 }
 
@@ -117,25 +118,6 @@ def get_images_and_labels_w_index(images, labels):
     return images_w_index, labels_w_index
 
 
-def group_by_tf_example(key_value):
-    _, value = key_value
-    image = value['image'][0]
-    label = value['label'][0]
-    height, width, depth = image.shape
-    example = tf.train.Example(features=tf.train.Features(
-        feature={
-            'image': _float_feature(image.reshape(-1)),
-            'label': _int64_feature([int(label)]),
-        }))
-    return example
-
-
-def _int64_feature(value):
-    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
-
-def _float_feature(value):
-  return tf.train.Feature(float_list=tf.train.FloatList(value=value))
-
 def _partition_fn(
         record,
         num_partitions,  # pylint: disable=unused-argument
@@ -171,6 +153,31 @@ def _ImageToExample(pipeline, input_dict):
         'image': image_line
     }) | beam.CoGroupByKey()
     return (group_by | "GroupByToTfExample" >> beam.Map(group_by_tf_example))
+
+
+def group_by_tf_example(key_value):
+    _, value = key_value
+    image = value['image'][0]
+    label = value['label'][0]
+    height, width, depth = image.shape
+    example = tf.train.Example(features=tf.train.Features(
+        feature={
+            'image': _bytes_feature([image.tostring()]),
+            'label': _int64_feature([int(label)]),
+        }))
+    return example
+
+
+def _int64_feature(value):
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
+
+
+def _float_feature(value):
+  return tf.train.Feature(float_list=tf.train.FloatList(value=value))
+
+
+def _bytes_feature(value):
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=value))
 
 
 def write_tfrecords():
@@ -265,7 +272,19 @@ def _parse_function(example_proto):
 
 
 def convert_parsed_record_to_ndarray(parsed_record):
-    return np.array(parsed_record['image']).reshape((28, 28, 1))
+    x = parsed_record['image']
+    x_np = x.numpy()
+    bytestream = io.BytesIO(x_np)
+    rows = 28
+    cols = 28
+    num_images = 1
+    buf = bytestream.read(rows * cols * num_images)
+    data = np.frombuffer(buf, dtype=np.uint8)
+    shape = (rows, cols, num_images)
+    data = data.reshape(*shape)
+    assert isinstance(data, np.ndarray), type(data)
+    assert data.shape == shape
+    return data
 
 
 def read_tfrecord(
@@ -283,3 +302,19 @@ def read_tfrecord(
     parsed_record = get_record(parsed_dataset, idx)
 
     return convert_parsed_record_to_ndarray(parsed_record)
+
+
+def main():
+  print('WRITE')
+  print('--------------------')
+  write_tfrecords()
+
+  print('READ')
+  print('--------------------')
+  data = read_tfrecord('eval-mnist-00000-of-00001.gz')
+
+  print('shape:', data.shape)
+
+
+if __name__ == '__main__':
+  main()
