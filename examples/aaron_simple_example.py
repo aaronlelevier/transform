@@ -37,9 +37,6 @@ from tensorflow_transform.tf_metadata import dataset_metadata, dataset_schema
 
 # GOOGLE-INITIALIZATION
 
-
-
-
 VOCAB_SIZE = 20000
 TRAIN_BATCH_SIZE = 128
 TRAIN_NUM_EPOCHS = 2
@@ -54,22 +51,21 @@ DEPTH = 1
 # REVIEW_KEY = 'review'
 # REVIEW_WEIGHT_KEY = 'review_weight'
 # LABEL_KEY = 'label'
-HEIGHT_KEY = 'height'
-WIDTH_KEY = 'width'
-DEPTH_KEY = 'depth'
+
+# HEIGHT_KEY = 'height'
+# WIDTH_KEY = 'width'
+# DEPTH_KEY = 'depth'
+# IMAGE_RAW_KEY = 'image_raw'
+IMAGE_KEY = 'image'
 LABEL_KEY = 'label'
-IMAGE_RAW_KEY = 'image_raw'
 
 # RAW_DATA_FEATURE_SPEC = {
 #     REVIEW_KEY: tf.io.FixedLenFeature([], tf.string),
 #     LABEL_KEY: tf.io.FixedLenFeature([], tf.int64)
 # }
-RAW_DATA_FEATURE_SPEC = { # known as the FEATURE_DESCRIPTION in TFX
-    HEIGHT_KEY: tf.FixedLenFeature([], tf.int64),
-    WIDTH_KEY: tf.FixedLenFeature([], tf.int64),
-    DEPTH_KEY: tf.FixedLenFeature([], tf.int64),
+RAW_DATA_FEATURE_SPEC = {
+    IMAGE_KEY: tf.FixedLenFeature([], tf.string),
     LABEL_KEY: tf.FixedLenFeature([], tf.int64),
-    IMAGE_RAW_KEY: tf.FixedLenFeature([], tf.string),
 }
 
 RAW_DATA_METADATA = dataset_metadata.DatasetMetadata(
@@ -84,10 +80,9 @@ TRANSFORMED_TRAIN_DATA_FILEBASE = 'train_transformed'
 TRANSFORMED_TEST_DATA_FILEBASE = 'test_transformed'
 EXPORTED_MODEL_DIR = 'exported_model_dir'
 
-# Functions for preprocessing
-
 MNIST_DATA_DIR = '/tmp/data/mnist/'
 
+# Functions for preprocessing
 
 @beam.ptransform_fn
 def ReadAndShuffleData(pcoll, train_or_val_str):
@@ -123,13 +118,9 @@ def group_by_dict(key_value):
   _, value = key_value
   image = value['image'][0]
   label = value['label'][0]
-  height, width, depth = image.shape
   return {
-    HEIGHT_KEY: HEIGHT,
-    WIDTH_KEY: WIDTH,
-    DEPTH_KEY: DEPTH,
+    IMAGE_KEY: image.tostring(),
     LABEL_KEY: label,
-    IMAGE_RAW_KEY: image.tostring()
   }
 
 
@@ -139,7 +130,7 @@ def Shuffle(pcoll):
   """Shuffles a PCollection.  Collection should not contain duplicates."""
   return (
       pcoll
-      | 'PairWithHash' >> beam.Map(lambda x: (hash(x[IMAGE_RAW_KEY]), x))
+      | 'PairWithHash' >> beam.Map(lambda x: (hash(x[IMAGE_KEY]), x))
       | 'GroupByHash' >> beam.GroupByKey()
       | 'DropHash' >> beam.FlatMap(lambda hash_and_values: hash_and_values[1]))
 
