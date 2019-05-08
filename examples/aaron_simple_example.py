@@ -34,6 +34,8 @@ import tensorflow_transform as tft
 import tensorflow_transform.beam as tft_beam
 from examples import aaron_rw_tfrecord as arw
 from tensorflow_transform.tf_metadata import dataset_metadata, dataset_schema
+from tensorflow.examples.tutorials.mnist import mnist
+
 
 # GOOGLE-INITIALIZATION
 
@@ -262,12 +264,35 @@ def _make_training_input_fn(tf_transform_output, transformed_examples,
 
   def input_fn():
     """Input function for training and eval."""
-    dataset = tf.data.experimental.make_batched_features_dataset(
-        file_pattern=transformed_examples,
-        batch_size=batch_size,
-        features=tf_transform_output.transformed_feature_spec(),
-        reader=tf.data.TFRecordDataset,
-        shuffle=True)
+
+    # dataset = tf.data.experimental.make_batched_features_dataset(
+    #     file_pattern=transformed_examples,
+    #     batch_size=batch_size,
+    #     features=tf_transform_output.transformed_feature_spec(),
+    #     reader=tf.data.TFRecordDataset,
+    #     shuffle=True)
+    dataset = tf.data.TFRecordDataset([transformed_examples], compression_type='GZIP')
+    dataset = dataset.map(decode)
+
+    # TODO(alelevier):
+    # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/how_tos/reading_data/fully_connected_reader.py
+
+
+    dataset = dataset.map(decode)
+    dataset = dataset.map(augment)
+    dataset = dataset.map(normalize)
+
+    # The shuffle transformation uses a finite-sized buffer to shuffle elements
+    # in memory. The parameter is the number of elements in the buffer. For
+    # completely uniform shuffling, set the parameter to be the same as the
+    # number of elements in the dataset.
+    dataset = dataset.shuffle(1000 + 3 * batch_size)
+
+    dataset = dataset.repeat(num_epochs)
+    dataset = dataset.batch(batch_size)
+
+    iterator = tf.compat.v1.data.make_one_shot_iterator(dataset)
+  return iterator.get_next()
 
     transformed_features = tf.compat.v1.data.make_one_shot_iterator(
         dataset).get_next()
@@ -279,6 +304,42 @@ def _make_training_input_fn(tf_transform_output, transformed_examples,
     return transformed_features, transformed_labels
 
   return input_fn
+
+
+def decode(serialized_example):
+  """Parses an image and label from the given `serialized_example`."""
+  features = tf.parse_single_example(
+      serialized_example,
+      # Defaults are not specified since both keys are required.
+      features={
+          IMAGE_KEY: tf.FixedLenFeature([], tf.string),
+          LABEL_KEY: tf.FixedLenFeature([], tf.int64),
+      })
+
+  # Convert from a scalar string tensor (whose single string has
+  # length mnist.IMAGE_PIXELS) to a uint8 tensor with shape
+  # [mnist.IMAGE_PIXELS].
+  image = tf.decode_raw(features[IMAGE_KEY], tf.uint8)
+  image.set_shape((mnist.IMAGE_PIXELS)) # 784
+
+  # Convert label from a scalar uint8 tensor to an int32 scalar.
+  label = tf.cast(features[LABEL_KEY], tf.int32)
+
+  return image, label
+
+
+def augment(image, label):
+  """data augmentation."""
+  # reshape into a 28x28
+  # image = tf.reshape(image, (HEIGHT, WIDTH))
+  # could do a distortion here
+  return image, label
+
+
+def normalize(image, label):
+  """Convert `image` from [0, 255] -> [-0.5, 0.5] floats."""
+  image = tf.cast(image, tf.float32) * (1. / 255) - 0.5
+  return image, label
 
 
 def _make_serving_input_fn(tf_transform_output):
@@ -326,16 +387,17 @@ def get_feature_columns(tf_transform_output):
     A list of FeatureColumns.
   """
   del tf_transform_output  # unused
-  # Unrecognized tokens are represented by -1, but
-  # categorical_column_with_identity uses the mod operator to map integers
-  # to the range [0, bucket_size).  By choosing bucket_size=VOCAB_SIZE + 1, we
-  # represent unrecognized tokens as VOCAB_SIZE.
-  review_column = tf.feature_column.categorical_column_with_identity(
-      REVIEW_KEY, num_buckets=VOCAB_SIZE + 1)
-  weighted_reviews = tf.feature_column.weighted_categorical_column(
-      review_column, REVIEW_WEIGHT_KEY)
-
-  return [weighted_reviews]
+  # # Unrecognized tokens are represented by -1, but
+  # # categorical_column_with_identity uses the mod operator to map integers
+  # # to the range [0, bucket_size).  By choosing bucket_size=VOCAB_SIZE + 1, we
+  # # represent unrecognized tokens as VOCAB_SIZE.
+  # review_column = tf.feature_column.categorical_column_with_identity(
+  #     REVIEW_KEY, num_buckets=VOCAB_SIZE + 1)
+  # weighted_reviews = tf.feature_column.weighted_categorical_column(
+  #     review_column, REVIEW_WEIGHT_KEY)
+  # return [weighted_reviews]
+  image_column = tf.feature_column.numeric_column(IMAGE_KEY, shape=28*28) #) shape=[28, 28])
+  return [image_column]
 
 
 def train_and_evaluate(working_dir,
@@ -369,17 +431,17 @@ def train_and_evaluate(working_dir,
                   max_steps=TRAIN_NUM_EPOCHS * num_train_instances /
                   TRAIN_BATCH_SIZE)
 
-  # Evaluate model on eval dataset.
-  eval_input_fn = _make_training_input_fn(
-      tf_transform_output,
-      os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE + '*'),
-      batch_size=1)
-  result = estimator.evaluate(input_fn=eval_input_fn, steps=num_test_instances)
+  # # Evaluate model on eval dataset.
+  # eval_input_fn = _make_training_input_fn(
+  #     tf_transform_output,
+  #     os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE + '*'),
+  #     batch_size=1)
+  # result = estimator.evaluate(input_fn=eval_input_fn, steps=num_test_instances)
 
-  # Export the model.
-  serving_input_fn = _make_serving_input_fn(tf_transform_output)
-  exported_model_dir = os.path.join(working_dir, EXPORTED_MODEL_DIR)
-  estimator.export_savedmodel(exported_model_dir, serving_input_fn)
+  # # Export the model.
+  # serving_input_fn = _make_serving_input_fn(tf_transform_output)
+  # exported_model_dir = os.path.join(working_dir, EXPORTED_MODEL_DIR)
+  # estimator.export_savedmodel(exported_model_dir, serving_input_fn)
 
   return result
 
@@ -423,7 +485,7 @@ def main():
 
   # TODO(aaronlelevier): implement after read/shuffle works
   transform_data(working_dir)
-  # results = train_and_evaluate(working_dir)
+  results = train_and_evaluate(working_dir)
 
   pprint.pprint(results)
 
