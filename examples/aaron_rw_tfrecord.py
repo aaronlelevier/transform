@@ -19,11 +19,8 @@ tf.enable_eager_execution()
 TFRECORD_OUTFILE = 'mnist'
 
 FEATURE_DESCRIPTION = {
-    'height': tf.FixedLenFeature([], tf.int64, default_value=0),
-    'width': tf.FixedLenFeature([], tf.int64, default_value=0),
-    'depth': tf.FixedLenFeature([], tf.int64, default_value=0),
+    'image': tf.FixedLenSequenceFeature([], tf.float32, default_value=0., allow_missing=True),
     'label': tf.FixedLenFeature([], tf.int64, default_value=0),
-    'image_raw': tf.FixedLenFeature([], tf.string, default_value=''),
 }
 
 SLICE = slice(0, 10)
@@ -109,18 +106,6 @@ def get_images_and_labels(images_path, labels_path):
     return images, labels
 
 
-def _int64_feature(value):
-    return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
-
-
-def _int64_feature_value(value):
-    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
-
-
-def _bytes_feature(value):
-    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
-
-
 def get_images_and_labels_w_index(images, labels):
     """
     Attach indexes to each record to be used for `beam.CoGroupByKey`
@@ -139,15 +124,17 @@ def group_by_tf_example(key_value):
     height, width, depth = image.shape
     example = tf.train.Example(features=tf.train.Features(
         feature={
-            'height': _int64_feature(height),
-            'width': _int64_feature(width),
-            'depth': _int64_feature(depth),
-            'label': _int64_feature(int(label)),
-            'image_raw': _int64_feature_value(
-              np.reshape(image, (height*width*depth)))
+            'image': _float_feature(image.reshape(-1)),
+            'label': _int64_feature([int(label)]),
         }))
     return example
 
+
+def _int64_feature(value):
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
+
+def _float_feature(value):
+  return tf.train.Feature(float_list=tf.train.FloatList(value=value))
 
 def _partition_fn(
         record,
@@ -278,19 +265,7 @@ def _parse_function(example_proto):
 
 
 def convert_parsed_record_to_ndarray(parsed_record):
-    x = parsed_record['image_raw']
-    x_np = x.numpy()
-    bytestream = io.BytesIO(x_np)
-    rows = 28
-    cols = 28
-    num_images = 1
-    buf = bytestream.read(rows * cols * num_images)
-    data = np.frombuffer(buf, dtype=np.uint8)
-    shape = (rows, cols, num_images)
-    data = data.reshape(*shape)
-    assert isinstance(data, np.ndarray), type(data)
-    assert data.shape == shape
-    return data
+    return np.array(parsed_record['image']).reshape((28, 28, 1))
 
 
 def read_tfrecord(
