@@ -14,8 +14,6 @@ from logzero import logger
 from tensorflow.contrib.learn.python.learn.datasets import mnist
 from tensorflow.python.platform import gfile
 
-tf.enable_eager_execution()
-
 TFRECORD_OUTFILE = 'mnist'
 
 # FixedLenFeature - only allows types: int64, float32 or string

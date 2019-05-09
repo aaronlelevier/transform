@@ -29,13 +29,12 @@ import tempfile
 import apache_beam as beam
 import tensorflow as tf
 from logzero import logger
+from tensorflow.examples.tutorials.mnist import mnist
 
 import tensorflow_transform as tft
 import tensorflow_transform.beam as tft_beam
 from examples import aaron_rw_tfrecord as arw
 from tensorflow_transform.tf_metadata import dataset_metadata, dataset_schema
-from tensorflow.examples.tutorials.mnist import mnist
-
 
 # GOOGLE-INITIALIZATION
 
@@ -261,47 +260,26 @@ def _make_training_input_fn(tf_transform_output, transformed_examples,
   Returns:
     The input function for training or eval.
   """
-
   def input_fn():
-    """Input function for training and eval."""
-
-    # dataset = tf.data.experimental.make_batched_features_dataset(
-    #     file_pattern=transformed_examples,
-    #     batch_size=batch_size,
-    #     features=tf_transform_output.transformed_feature_spec(),
-    #     reader=tf.data.TFRecordDataset,
-    #     shuffle=True)
-    dataset = tf.data.TFRecordDataset([transformed_examples], compression_type='GZIP')
-    dataset = dataset.map(decode)
+    """Input function for training and eval.
 
     # TODO(alelevier):
     # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/how_tos/reading_data/fully_connected_reader.py
 
+    Returns:
+      tuple(Tensor) - (image, label)
+    """
+    dataset = tf.data.TFRecordDataset([transformed_examples], compression_type='GZIP')
 
     dataset = dataset.map(decode)
     dataset = dataset.map(augment)
-    dataset = dataset.map(normalize)
 
-    # The shuffle transformation uses a finite-sized buffer to shuffle elements
-    # in memory. The parameter is the number of elements in the buffer. For
-    # completely uniform shuffling, set the parameter to be the same as the
-    # number of elements in the dataset.
-    dataset = dataset.shuffle(1000 + 3 * batch_size)
-
-    dataset = dataset.repeat(num_epochs)
     dataset = dataset.batch(batch_size)
 
-    iterator = tf.compat.v1.data.make_one_shot_iterator(dataset)
-  return iterator.get_next()
+    #
 
-    transformed_features = tf.compat.v1.data.make_one_shot_iterator(
-        dataset).get_next()
-
-    # Extract features and label from the transformed tensors.
-    # TODO(b/30367437): make transformed_labels a dict.
-    transformed_labels = transformed_features.pop(LABEL_KEY)
-
-    return transformed_features, transformed_labels
+    return tf.compat.v1.data.make_one_shot_iterator(
+      dataset).get_next()
 
   return input_fn
 
@@ -331,7 +309,7 @@ def decode(serialized_example):
 def augment(image, label):
   """data augmentation."""
   # reshape into a 28x28
-  # image = tf.reshape(image, (HEIGHT, WIDTH))
+  image = tf.reshape(image, (HEIGHT, WIDTH))
   # could do a distortion here
   return image, label
 
@@ -396,7 +374,7 @@ def get_feature_columns(tf_transform_output):
   # weighted_reviews = tf.feature_column.weighted_categorical_column(
   #     review_column, REVIEW_WEIGHT_KEY)
   # return [weighted_reviews]
-  image_column = tf.feature_column.numeric_column(IMAGE_KEY, shape=28*28) #) shape=[28, 28])
+  image_column = tf.feature_column.numeric_column(IMAGE_KEY, shape=[28, 28])
   return [image_column]
 
 
@@ -417,10 +395,21 @@ def train_and_evaluate(working_dir,
 
   run_config = tf.estimator.RunConfig()
 
-  estimator = tf.estimator.LinearClassifier(
-      feature_columns=get_feature_columns(tf_transform_output),
-      config=run_config,
-      loss_reduction=tf.compat.v1.losses.Reduction.SUM)
+  # estimator = tf.estimator.LinearClassifier(
+  #     feature_columns=get_feature_columns(tf_transform_output),
+  #     config=run_config,
+  #     loss_reduction=tf.compat.v1.losses.Reduction.SUM)
+
+  # estimator = tf.estimator.LinearClassifier(
+  #   feature_columns=get_feature_columns(tf_transform_output),
+  #   n_classes=10)
+  estimator = tf.estimator.DNNClassifier(
+    feature_columns=get_feature_columns(tf_transform_output),
+    hidden_units=[256, 32],
+    optimizer=tf.train.AdamOptimizer(1e-4),
+    n_classes=10,
+    dropout=0.1,
+  )
 
   # Fit the model using the default optimizer.
   train_input_fn = _make_training_input_fn(
