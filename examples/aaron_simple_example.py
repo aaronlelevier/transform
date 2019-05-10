@@ -38,7 +38,6 @@ from tensorflow_transform.tf_metadata import dataset_metadata, dataset_schema
 
 # GOOGLE-INITIALIZATION
 
-VOCAB_SIZE = 20000
 TRAIN_BATCH_SIZE = 128
 TRAIN_NUM_EPOCHS = 2
 NUM_TRAIN_INSTANCES = 60000
@@ -49,21 +48,9 @@ HEIGHT = 28
 WIDTH = 28
 DEPTH = 1
 
-# REVIEW_KEY = 'review'
-# REVIEW_WEIGHT_KEY = 'review_weight'
-# LABEL_KEY = 'label'
-
-# HEIGHT_KEY = 'height'
-# WIDTH_KEY = 'width'
-# DEPTH_KEY = 'depth'
-# IMAGE_RAW_KEY = 'image_raw'
 IMAGE_KEY = 'image'
 LABEL_KEY = 'label'
 
-# RAW_DATA_FEATURE_SPEC = {
-#     REVIEW_KEY: tf.io.FixedLenFeature([], tf.string),
-#     LABEL_KEY: tf.io.FixedLenFeature([], tf.int64)
-# }
 RAW_DATA_FEATURE_SPEC = {
     IMAGE_KEY: tf.FixedLenFeature([], tf.string),
     LABEL_KEY: tf.FixedLenFeature([], tf.int64),
@@ -84,6 +71,7 @@ EXPORTED_MODEL_DIR = 'exported_model_dir'
 MNIST_DATA_DIR = '/tmp/data/mnist/'
 
 # Functions for preprocessing
+
 
 @beam.ptransform_fn
 def ReadAndShuffleData(pcoll, train_or_val_str):
@@ -106,8 +94,7 @@ def ReadAndShuffleData(pcoll, train_or_val_str):
   group_by = ({'label': label_line, 'image': image_line}) | beam.CoGroupByKey()
 
   # combines images and labels into a single TFRecord
-  all_examples = (group_by
-                  | "GroupByToTfExample" >> beam.Map(group_by_dict))
+  all_examples = (group_by | "GroupByToTfExample" >> beam.Map(group_by_dict))
 
   # shuffles TFRecords
   return (all_examples | 'Shuffle' >> Shuffle())
@@ -120,8 +107,8 @@ def group_by_dict(key_value):
   image = value['image'][0]
   label = value['label'][0]
   return {
-    IMAGE_KEY: image.tostring(),
-    LABEL_KEY: label,
+      IMAGE_KEY: image.tostring(),
+      LABEL_KEY: label,
   }
 
 
@@ -161,14 +148,16 @@ def read_and_shuffle_data(train_neg_filepattern, train_pos_filepattern,
          | 'ReadAndShuffleTrain' >> ReadAndShuffleData('train')
          | 'EncodeTrainData' >> beam.Map(coder.encode)
          | 'WriteTrainData' >> beam.io.WriteToTFRecord(os.path.join(
-             working_dir, SHUFFLED_TRAIN_DATA_FILEBASE), file_name_suffix='.gz'))
+             working_dir, SHUFFLED_TRAIN_DATA_FILEBASE),
+                                                       file_name_suffix='.gz'))
 
     # # test - shuffle data step
     _ = (pipeline
          | 'ReadAndShuffleTest' >> ReadAndShuffleData('val')
          | 'EncodeTestData' >> beam.Map(coder.encode)
-         | 'WriteTestData' >> beam.io.WriteToTFRecord(
-             os.path.join(working_dir, SHUFFLED_TEST_DATA_FILEBASE), file_name_suffix='.gz'))
+         | 'WriteTestData' >> beam.io.WriteToTFRecord(os.path.join(
+             working_dir, SHUFFLED_TEST_DATA_FILEBASE),
+                                                      file_name_suffix='.gz'))
     # # pylint: enable=no-value-for-parameter
 
 
@@ -200,22 +189,12 @@ def transform_data(working_dir):
           | 'DecodeTest' >> beam.Map(coder.decode))
 
       def preprocessing_fn(inputs):
-        """Preprocess input columns into transformed columns."""
+        """
+        Preprocess input columns into transformed columns.
+
+        NOTE: empty func, not sure if tf.transforms does stuff for images...
+        """
         return inputs
-        # review = inputs[REVIEW_KEY]
-        # # Here tf.compat.v1.string_split behaves differently from
-        # # tf.strings.split.
-        # review_tokens = tf.compat.v1.string_split(review, DELIMITERS)
-        # review_indices = tft.compute_and_apply_vocabulary(review_tokens,
-        #                                                   top_k=VOCAB_SIZE)
-        # # Add one for the oov bucket created by compute_and_apply_vocabulary.
-        # review_bow_indices, review_weight = tft.tfidf(review_indices,
-        #                                               VOCAB_SIZE + 1)
-        # return {
-        #     REVIEW_KEY: review_bow_indices,
-        #     REVIEW_WEIGHT_KEY: review_weight,
-        #     LABEL_KEY: inputs[LABEL_KEY]
-        # }
 
       (transformed_train_data, transformed_metadata), transform_fn = (
           (train_data, RAW_DATA_METADATA)
@@ -231,12 +210,14 @@ def transform_data(working_dir):
       _ = (transformed_train_data
            | 'EncodeTrainData' >> beam.Map(transformed_data_coder.encode)
            | 'WriteTrainData' >> beam.io.WriteToTFRecord(
-               os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE), file_name_suffix='.gz'))
+               os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE),
+               file_name_suffix='.gz'))
 
       _ = (transformed_test_data
            | 'EncodeTestData' >> beam.Map(transformed_data_coder.encode)
            | 'WriteTestData' >> beam.io.WriteToTFRecord(
-               os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE), file_name_suffix='.gz'))
+               os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE),
+               file_name_suffix='.gz'))
 
       # Will write a SavedModel and metadata to two subdirectories of
       # working_dir, given by tft.TRANSFORM_FN_DIR and
@@ -260,6 +241,7 @@ def _make_training_input_fn(tf_transform_output, transformed_examples,
   Returns:
     The input function for training or eval.
   """
+
   def input_fn():
     """Input function for training and eval.
 
@@ -269,17 +251,18 @@ def _make_training_input_fn(tf_transform_output, transformed_examples,
     Returns:
       tuple(Tensor) - (image, label)
     """
-    dataset = tf.data.TFRecordDataset([transformed_examples], compression_type='GZIP')
+    dataset = tf.data.TFRecordDataset([transformed_examples],
+                                      compression_type='GZIP')
 
     dataset = dataset.map(decode)
     dataset = dataset.map(augment)
-
     dataset = dataset.batch(batch_size)
 
-    #
+    steps = NUM_TRAIN_INSTANCES // TRAIN_BATCH_SIZE
+    dataset = dataset.repeat(TRAIN_NUM_EPOCHS * steps)
 
-    return tf.compat.v1.data.make_one_shot_iterator(
-      dataset).get_next()
+    image, label = tf.compat.v1.data.make_one_shot_iterator(dataset).get_next()
+    return {IMAGE_KEY: image}, label
 
   return input_fn
 
@@ -298,7 +281,7 @@ def decode(serialized_example):
   # length mnist.IMAGE_PIXELS) to a uint8 tensor with shape
   # [mnist.IMAGE_PIXELS].
   image = tf.decode_raw(features[IMAGE_KEY], tf.uint8)
-  image.set_shape((mnist.IMAGE_PIXELS)) # 784
+  image.set_shape((mnist.IMAGE_PIXELS))  # 784
 
   # Convert label from a scalar uint8 tensor to an int32 scalar.
   label = tf.cast(features[LABEL_KEY], tf.int32)
@@ -365,15 +348,7 @@ def get_feature_columns(tf_transform_output):
     A list of FeatureColumns.
   """
   del tf_transform_output  # unused
-  # # Unrecognized tokens are represented by -1, but
-  # # categorical_column_with_identity uses the mod operator to map integers
-  # # to the range [0, bucket_size).  By choosing bucket_size=VOCAB_SIZE + 1, we
-  # # represent unrecognized tokens as VOCAB_SIZE.
-  # review_column = tf.feature_column.categorical_column_with_identity(
-  #     REVIEW_KEY, num_buckets=VOCAB_SIZE + 1)
-  # weighted_reviews = tf.feature_column.weighted_categorical_column(
-  #     review_column, REVIEW_WEIGHT_KEY)
-  # return [weighted_reviews]
+
   image_column = tf.feature_column.numeric_column(IMAGE_KEY, shape=[28, 28])
   return [image_column]
 
@@ -393,44 +368,36 @@ def train_and_evaluate(working_dir,
   """
   tf_transform_output = tft.TFTransformOutput(working_dir)
 
-  run_config = tf.estimator.RunConfig()
-
-  # estimator = tf.estimator.LinearClassifier(
-  #     feature_columns=get_feature_columns(tf_transform_output),
-  #     config=run_config,
-  #     loss_reduction=tf.compat.v1.losses.Reduction.SUM)
-
-  # estimator = tf.estimator.LinearClassifier(
-  #   feature_columns=get_feature_columns(tf_transform_output),
-  #   n_classes=10)
   estimator = tf.estimator.DNNClassifier(
-    feature_columns=get_feature_columns(tf_transform_output),
-    hidden_units=[256, 32],
-    optimizer=tf.train.AdamOptimizer(1e-4),
-    n_classes=10,
-    dropout=0.1,
+      feature_columns=get_feature_columns(tf_transform_output),
+      hidden_units=[256, 32],
+      optimizer=tf.train.AdamOptimizer(1e-4),
+      n_classes=10,
+      dropout=0.1,
   )
 
   # Fit the model using the default optimizer.
   train_input_fn = _make_training_input_fn(
       tf_transform_output,
-      os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE + '*'),
+      os.path.join(working_dir, TRANSFORMED_TRAIN_DATA_FILEBASE +
+                   '-00000-of-00001.gz'),  # '*'),
       batch_size=TRAIN_BATCH_SIZE)
   estimator.train(input_fn=train_input_fn,
                   max_steps=TRAIN_NUM_EPOCHS * num_train_instances /
                   TRAIN_BATCH_SIZE)
 
-  # # Evaluate model on eval dataset.
-  # eval_input_fn = _make_training_input_fn(
-  #     tf_transform_output,
-  #     os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE + '*'),
-  #     batch_size=1)
-  # result = estimator.evaluate(input_fn=eval_input_fn, steps=num_test_instances)
+  # Evaluate model on eval dataset.
+  eval_input_fn = _make_training_input_fn(
+      tf_transform_output,
+      os.path.join(working_dir, TRANSFORMED_TEST_DATA_FILEBASE +
+                   '-00000-of-00001.gz'),  # '*'),
+      batch_size=1)
+  result = estimator.evaluate(input_fn=eval_input_fn, steps=num_test_instances)
 
-  # # Export the model.
-  # serving_input_fn = _make_serving_input_fn(tf_transform_output)
-  # exported_model_dir = os.path.join(working_dir, EXPORTED_MODEL_DIR)
-  # estimator.export_savedmodel(exported_model_dir, serving_input_fn)
+  # Export the model.
+  serving_input_fn = _make_serving_input_fn(tf_transform_output)
+  exported_model_dir = os.path.join(working_dir, EXPORTED_MODEL_DIR)
+  estimator.export_savedmodel(exported_model_dir, serving_input_fn)
 
   return result
 
