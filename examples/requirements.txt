@@ -5,3 +5,5 @@ isort
 jupyter
 notebook
 logzero
+imageio
+tensorflow-serving-api
